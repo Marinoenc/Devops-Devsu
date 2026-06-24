@@ -1,7 +1,7 @@
 FROM node:18.20.4-alpine AS dependencies
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm install
 
 FROM node:18.20.4-alpine AS runner
 ENV NODE_ENV=production \
