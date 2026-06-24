@@ -18,9 +18,13 @@ app.get('/health', async (_req, res) => {
 
 app.use('/api/users', usersRouter)
 
-const server = app.listen(PORT, async () => {
-  await sequelize.sync({ force: false })
-  console.log(`Server running on port ${PORT}`)
-})
+let server
+
+if (process.env.NODE_ENV !== 'test') {
+  server = app.listen(PORT, async () => {
+    await sequelize.sync({ force: false })
+    console.log(`Server running on port ${PORT}`)
+  })
+}
 
 export { app, server }
