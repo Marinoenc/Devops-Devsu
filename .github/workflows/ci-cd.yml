@@ -1,0 +1,131 @@
+name: ci-cd-node-azure
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: demo-devops-nodejs
+  K8S_NAMESPACE: devsu-demo
+  LOCATION: eastus
+  RESOURCE_GROUP: rg-devsu-devops-demo
+  ACR_NAME: acrdevsufdecfec5
+  AKS_CLUSTER_NAME: aks-devsu-devops-demo
+  TFSTATE_RG: rg-devsu-tfstate
+  TFSTATE_STORAGE: sttfdevsufdecfec5
+  TFSTATE_CONTAINER: tfstate
+
+jobs:
+  test-and-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  terraform-apply:
+    needs: test-and-analyze
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - uses: hashicorp/setup-terraform@v3
+      - name: Bootstrap Terraform remote state
+        run: |
+          az group create --name "$TFSTATE_RG" --location "$LOCATION"
+          az storage account create \
+            --name "$TFSTATE_STORAGE" \
+            --resource-group "$TFSTATE_RG" \
+            --location "$LOCATION" \
+            --sku Standard_LRS \
+            --kind StorageV2 \
+            --min-tls-version TLS1_2
+          az storage container create \
+            --name "$TFSTATE_CONTAINER" \
+            --account-name "$TFSTATE_STORAGE" \
+            --auth-mode login
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=$TFSTATE_RG" \
+            -backend-config="storage_account_name=$TFSTATE_STORAGE" \
+            -backend-config="container_name=$TFSTATE_CONTAINER" \
+            -backend-config="key=devsu-demo-devops-node.tfstate"
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate
+      - name: Terraform plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+  docker-build-scan-push:
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Login to ACR
+        run: az acr login --name $ACR_NAME
+      - name: Build image
+        run: |
+          docker build \
+            -t $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }} \
+            -t $ACR_NAME.azurecr.io/$IMAGE_NAME:latest .
+      - name: Vulnerability scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: table
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+      - name: Push image
+        run: |
+          docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+          docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:latest
+
+  deploy-aks:
+    needs: docker-build-scan-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - uses: azure/setup-kubectl@v4
+      - name: Get AKS credentials
+        run: az aks get-credentials -g $RESOURCE_GROUP -n $AKS_CLUSTER_NAME --overwrite-existing
+      - name: Replace image and deploy
+        run: |
+          sed -i "s#ACR_LOGIN_SERVER/demo-devops-nodejs:latest#$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}#g" k8s/deployment.yaml
+          kubectl apply -k k8s/
+          kubectl rollout status deployment/demo-devops-nodejs -n $K8S_NAMESPACE --timeout=300s
+      - name: Show public endpoint
+        run: |
+          kubectl get svc demo-devops-service -n $K8S_NAMESPACE -o wide
+          echo "Wait 2-5 minutes if EXTERNAL-IP is pending. Then test: http://EXTERNAL-IP/api/users"

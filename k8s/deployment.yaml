@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-devops-nodejs
+  namespace: devsu-demo
+  labels:
+    app: demo-devops-nodejs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-devops-nodejs
+  template:
+    metadata:
+      labels:
+        app: demo-devops-nodejs
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 100
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/demo-devops-nodejs:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: demo-devops-config
+            - secretRef:
+                name: demo-devops-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: sqlite-data
+              mountPath: /app/data
+      volumes:
+        - name: sqlite-data
+          emptyDir: {}

@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+coverage
+.git
+.github
+terraform
+k8s
+docs
+*.sqlite
+*.zip
+.env

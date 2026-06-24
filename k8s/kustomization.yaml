@@ -1,0 +1,9 @@
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+# Ingress manifest is included in k8s/ingress.yaml as optional.
+# Enable it only if you install an ingress controller and configure DNS.
